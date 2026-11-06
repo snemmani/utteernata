@@ -1,0 +1,5 @@
+vllm
+numpy
+plotly
+nbformat
+torch

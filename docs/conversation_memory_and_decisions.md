@@ -2,7 +2,8 @@
 
 **User:** Shankar Nag Nemmani  
 **Location:** Hyderabad, India  
-**Date Initiated:** November 2, 2026 (Updated: November 3, 2026)  
+**Date Initiated:** November 2, 2026  
+**Latest Checkpoint:** November 4, 2026 (Day 1 Fundamentals 100% Cleared & Mastered)  
 **Project:** Utteernata (ఉత్తీర్ణత / उत्तीणर्ता — Career Transition to Tier-1 Applied AI & Post-Training Builder)  
 **Primary Goal:** Transition from Enterprise Security Management into a top-tier Applied AI / Post-Training Research & Builder role at frontier AI labs (Anthropic, Scale AI, Mistral, Databricks, Uber AI, DeepMind India, Microsoft GenAI), bypassing offshore/vendor delegated maintenance loops.
 
@@ -61,51 +62,66 @@ When running Jupyter notebook cells executing PyTorch on the NVIDIA RTX 5070 ins
 
 ---
 
-## 4. Deep Concepts & Mathematical Intuition Mastered
+## 4. Deep Concepts & Mathematical Intuition Mastered (Day 1 Complete)
 
 ### A. The Dimensions of Transformer Tensors: `(B, T, C)`
 * **Batch Size ($B$):** How many independent sequences/prompts are processed in parallel on the GPU.
 * **Sequence Length ($T$ / Time / Context):** Number of tokens (words/sub-words) in each sequence.
 * **Channels ($C$ / Embedding Dimension / $d_{\text{model}}$):** Number of feature values describing the meaning of a single token (e.g., 768 in GPT-2, 4096 in Llama 3 8B).
 
-### B. Multi-Head Attention Dimensions: Splitting & Transposing
-1. **Splitting Heads (`.view(B, T, nh, hs)`):** Slicing each token's $C$-dimensional vector into $nh$ heads of dimension $hs = C / nh$. Slices data conceptually without moving bytes in memory.
-2. **The Transpose Trick (`.transpose(1, 2)`):** 
-   * Reorganizes shape from `(B, T, nh, hs)` (Grouped by Word) to `(B, nh, T, hs)` (Grouped by Head).
-   * **Why it is mandatory:** PyTorch's `@` (matmul) only multiplies the last two dimensions `(-2, -1)`. To compute a $(T \times T)$ token-to-token relationship matrix for each head, $T$ must be in the last two dimensions!
-   * Gives each Head the complete sequence to process in parallel on separate GPU Tensor Cores.
+### B. High-Dimensional Transpose: The Coordinate Hierarchy Intuition
+* **It is NOT a 2D diagonal pancake flip.** Transpose in $N$-D space does not change data values; it strictly swaps the order of the lookup hierarchy.
+* Before `transpose(1, 2)`: `tensor[Token][Head]` $\to$ Grouped by Word.
+* After `transpose(1, 2)`: `tensor[Head][Token]` $\to$ Grouped by Head.
+* **Why it is mandatory:** PyTorch's `@` (matmul) only multiplies the last two dimensions `(-2, -1)`. To compute a $(T \times T)$ token-to-token relationship matrix for each head, $T$ must be in the last two dimensions! This gives each Head the complete sequence to process in parallel on separate GPU Tensor Cores.
 
 ### C. Physical VRAM Memory & Contiguity (`.contiguous()`)
 * GPU memory is strictly **1D**. Multi-dimensional tensors are an illusion maintained via **Strides** (how many memory slots to jump).
 * `.transpose()` only alters stride metadata without copying data. Logically adjacent elements are no longer physically adjacent in VRAM $\to$ `is_contiguous() == False`.
 * `.contiguous()` forces PyTorch to physically rearrange the bytes in memory sequentially so subsequent `.view()` calls succeed without crashing.
 
-### D. Why $K$ is Transposed (`K.transpose(-2, -1)`)
-1. **Linear Algebra:** $Q$ is $(T, hs)$ and $K$ is $(T, hs)$. $(T \times hs) @ (T \times hs)$ fails because inner dimensions do not match ($hs \neq T$). Transposing $K$ makes it $(hs, T)$, allowing $(T \times hs) @ (hs \times T) \to (T \times T)$.
-2. **Semantic Meaning:** Generates a square $(T \times T)$ grid representing how much every token $i$ attends to every token $j$.
+### D. Why Direct $K @ Q$ Fails
+* In linear algebra, inner dimensions must match: $(M \times \mathbf{K}) \times (\mathbf{K} \times N) \to (M \times N)$.
+* $K$ has shape $(T, hs)$ and $Q$ has shape $(T, hs)$. Multiplying $(4 \times \mathbf{64}) \times (\mathbf{4} \times 64)$ crashes because $64 \neq 4$. One matrix must be transposed.
 
-### E. Matrix Multiplication IS a Grid of Dot Products
+### E. Why $Q @ K^T$ and NOT $K @ Q^T$ (The Consumer vs. Producer Invariant)
+* **The Left Matrix Controls the Rows:** In $A \times B = C$, Row $i$ of $C$ strictly belongs to Row $i$ of $A$.
+* **$Q$ is the Consumer (Shopper):** Token $i$ asks questions to build its context. Placing $Q$ on the left guarantees that **Row $i$ of the scores matrix is Token $i$'s personal shopping cart / recipe**.
+* **$K$ is the Producer (Product on Shelf):** Placing $K$ on the left ($K @ Q^T$) would make Row $i$ represent *"how popular Token $i$ is to other people"*, which scrambles token identity and fails to give Token $i$ the recipe it needs to update its own vector.
+* **Invariant:** Row $i$ in $\to$ Row $i$ out. Identity is strictly preserved.
+
+### F. Scores Tensor Shape: `(B, nh, T, T)`
+* Formed by $(B, nh, T, hs) @ (B, nh, hs, T) \to (B, nh, T, T)$.
+* Every head ($nh$) for every batch element ($B$) gets an independent, square $(T \times T)$ token-to-token attention map.
+
+### G. Matrix Multiplication IS a Grid of Dot Products
 * Matrix Multiplication is NOT separate from Dot Products. Every cell $(i, j)$ in $Q @ K^T$ is literally:
   $$\text{Score}[i, j] = \sum_{c=1}^{hs} Q[i, c] K[j, c] = \mathbf{q}_i \cdot \mathbf{k}_j$$
 * MatMul is simply hardware-accelerated batch execution of all $T \times T$ vector dot products simultaneously on GPU Tensor Cores instead of using slow Python `for` loops.
 
-### F. Why `weights` Has Shape $(T, T)$ (Collapsing Channels)
+### H. Why `weights` Has Shape $(T, T)$ (Collapsing Channels)
 * The dot product deliberately **sums across all channels**, collapsing them into a single scalar similarity score per token pair.
 * `weights` has **no channel data**—it is a pure $(T, T)$ **Routing Map** ("Recipe").
 * Attention decouples **Routing** ($Q, K \to$ who should talk to whom) from **Payload** ($V \to$ rich channel information $T \times hs$).
 
-### G. The Recipe & Ingredients: `out = weights @ V`
+### I. The Recipe & Ingredients: `out = weights @ V`
 * `weights` $(T, T)$ tells each token what percentage of context to pull from other tokens.
 * $V$ $(T, hs)$ holds the actual information content.
 * Multiplying $(T, T) @ (T, hs) \to (T, hs)$ produces context-enriched token vectors (e.g., word "bank" absorbs 85% of its vector from "money", dynamically shifting its meaning toward a financial institution).
 
-### H. Why Divide by $\sqrt{d_k}$
+### J. Scaling Factor $\frac{1}{\sqrt{d_k}}$
 * The dot product of two $d_k$-dimensional vectors with $\mathcal{N}(0, 1)$ components has variance $d_k$ and standard deviation $\sqrt{d_k}$.
 * For $d_k = 64$ or $128$, raw dot products reach $\pm 30$ to $\pm 50$.
 * Softmax on large values saturates ($\approx 1.0$ or $\approx 0.0$), causing gradients to vanish ($\frac{\partial \text{softmax}}{\partial z} \to 0$).
 * Dividing by $\sqrt{d_k}$ stabilizes the variance to $1.0$, preserving learning dynamics.
 
-### I. `torch.nn` vs `torch.nn.functional` (`F`)
+### K. The Softmax Dimension Trap (`dim=-1` vs `dim=-2` vs `dim=0`)
+* **`dim` defines which index changes/loops** during the operation:
+  * When your finger moves **horizontally across a row**, the Row index is fixed and the **Column index changes** $\to$ that is **`dim=-1`** (or `dim=3` in 4D). Softmax along `dim=-1` makes each ROW sum to 1.0!
+  * When your finger moves **vertically down a column**, the Column index is fixed and the **Row index changes** $\to$ that is **`dim=-2`**. Softmax along `dim=-2` makes each COLUMN sum to 1.0 (which breaks causal masking and recipient budgets).
+  * Passing **`dim=0`** softmaxes across the **Batch dimension ($B$)**, causing cross-sentence data leakage and collapsing to 1.0 everywhere when $B=1$.
+
+### L. `torch.nn` vs `torch.nn.functional` (`F`)
 * **`torch.nn`:** Stateful, object-oriented layers holding learnable parameters ($W, b$) defined in `__init__()` (e.g., `nn.Linear`, `nn.Embedding`, `nn.LayerNorm`, `nn.Dropout`).
 * **`torch.nn.functional` (`F`):** Pure stateless mathematical functions called in `forward()` (e.g., `F.softmax`, `F.gelu`, `F.cross_entropy`).
 
@@ -117,7 +133,7 @@ When running Jupyter notebook cells executing PyTorch on the NVIDIA RTX 5070 ins
 * `README.md` — Project root index and quickstart.
 * `docs/90_day_ai_research_builder_masterplan.md` — 12-week comprehensive curriculum, 30+ hr/wk timetable, and mock interview questions.
 * `docs/revamped_resume_shankar_nemmani.md` — Modernized 1-page ATS-optimized resume.
-* `docs/conversation_memory_and_decisions.md` — This file.
+* `docs/conversation_memory_and_decisions.md` — This file (Master checkpoint).
 * `docs/pytorch_zero_to_hero_guide.md` — 72-hour PyTorch guide for TensorFlow developers.
 * `src/day01_tensors_autograd.py` — Hardware check, autograd, and 2-layer MLP training loop.
 * `src/day01_tensor_gymnastics.py` — The 5 core tensor operations of Multi-Head Attention.
@@ -126,8 +142,12 @@ When running Jupyter notebook cells executing PyTorch on the NVIDIA RTX 5070 ins
 ### Interactive Generative UI Visualizers
 * `tensor_gymnastics_visualizer.html` — Interactive step-by-step visualizer for `.view()` and `.transpose(1, 2)`.
 * `matmul_is_dot_product_visualizer.html` — Interactive proof that $Q \times K^T$ is a grid of vector dot products with dynamic cell inspection.
+* `3d_tensor_transpose_visualizer.html` — Interactive 3D orbitable visualizer demonstrating how high-dimensional transpose reorganizes coordinate lookup hierarchies.
 
 ---
 
 ## 6. Next Immediate Objective: Day 2 Milestone
-* Assemble all the mastered pieces ($Q, K, V$ projections, scaling, causal masking, softmax, and output projection) into a clean, modular **`CausalSelfAttention(nn.Module)`** class from scratch without high-level shortcuts.
+* Assemble all mastered fundamentals into a complete, modular, industrial-grade **`CausalSelfAttention(nn.Module)`** class from scratch.
+* Learn and implement the frontier engineering pattern: **fused $QKV$ linear projection (`c_attn = nn.Linear(C, 3 * C)`)** to cut memory bandwidth in half.
+* Register persistent causal buffers via `self.register_buffer("bias", ...)`.
+* Validate end-to-end forward pass on the NVIDIA RTX 5070 GPU.
